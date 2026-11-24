@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cocos2d .DAT Asset Tool (XOR 0x5A)</title>
+    <!-- Memuat pustaka JSZip untuk ekstraksi dan kompresi ZIP di sisi client -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        :root {
+            --bg: #0f172a; --card: #1e293b; --text: #f8fafc;
+            --muted: #94a3b8; --accent: #38bdf8; --success: #22c55e; --border: #334155;
+        }
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: var(--bg); color: var(--text);
+            margin: 0; padding: 2rem; line-height: 1.5;
+        }
+        .container { max-width: 900px; margin: 0 auto; }
+        h1 { margin-top: 0; color: var(--accent); }
+        .card {
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem;
+        }
+        .controls { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
+        input[type="number"], input[type="text"] {
+            background: var(--bg); border: 1px solid var(--border);
+            color: var(--text); padding: 0.5rem; border-radius: 6px; width: 100px;
+        }
+        .dropzone {
+            border: 2px dashed var(--accent); border-radius: 10px;
+            padding: 2.5rem; text-align: center; cursor: pointer;
+            transition: background 0.2s;
+        }
+        .dropzone:hover { background: rgba(56, 189, 248, 0.08); }
+        button {
+            background: var(--accent); color: #0f172a; font-weight: 600;
+            border: none; padding: 0.6rem 1.2rem; border-radius: 6px; cursor: pointer;
+        }
+        button:hover { opacity: 0.9; }
+        button.secondary { background: var(--border); color: var(--text); }
+        .file-list { list-style: none; padding: 0; margin: 1rem 0 0 0; }
+        .file-item {
+            background: var(--bg); border: 1px solid var(--border);
+            padding: 0.8rem 1rem; border-radius: 8px; margin-bottom: 0.5rem;
+            display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;
+        }
+        .preview-box {
+            background: #020617; border: 1px solid var(--border);
+            padding: 1rem; border-radius: 8px; max-height: 300px;
+            overflow: auto; font-family: monospace; font-size: 0.85rem;
+            white-space: pre-wrap; display: none; margin-top: 1rem;
+        }
+        .badge {
+            background: var(--border); padding: 0.2rem 0.5rem;
+            border-radius: 4px; font-size: 0.75rem; color: var(--accent);
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>🛠️ Game .DAT Asset Tool (XOR 0x5A)</h1>
+    <p style="color: var(--muted)">Alat browser untuk mendekripsi, melihat pratinjau isi (.plist / .sha), mengekstrak, dan mengunci kembali aset game.</p>
+
+    <!-- MODE 1: UNPACK (.DAT -> .ZIP) -->
+    <div class="card">
+        <h2>1. Unpack File (.dat ➔ .zip & Preview)</h2>
+        <div class="controls">
+            <label>Maksimal File (0 = Semua): <input type="number" id="maxFiles" value="0" min="0"></label>
+            <label>Kunci XOR (Hex): <input type="text" id="xorKey" value="0x5A"></label>
+            <button id="downloadAllBtn" style="display:none;" onclick="downloadAllZips()">⬇️ Unduh Semua (.zip)</button>
+        </div>
+
+        <div class="dropzone" id="dropDat" onclick="document.getElementById('fileInput').click()">
+            <p><strong>Klik atau Seret (Drag & Drop)</strong> beberapa file <code>.dat</code> ke sini</p>
+            <input type="file" id="fileInput" multiple accept=".dat" style="display:none">
+        </div>
+
+        <ul class="file-list" id="datResultList"></ul>
+        <div class="preview-box" id="previewBox"></div>
+    </div>
+
+    <!-- MODE 2: PACK (.ZIP -> .DAT) -->
+    <div class="card">
+        <h2>2. Repack File (.zip ➔ .dat)</h2>
+        <p style="color: var(--muted); font-size: 0.9rem;">Kompres folder aset yang sudah diedit menjadi <code>.zip</code>, lalu seret ke sini untuk menguncinya kembali menjadi <code>.dat</code>.</p>
+        <div class="dropzone" id="dropZip" onclick="document.getElementById('zipInput').click()">
+            <p><strong>Klik atau Seret file <code>.zip</code></strong> ke sini untuk diubah menjadi <code>.dat</code></p>
+            <input type="file" id="zipInput" multiple accept=".zip" style="display:none">
+        </div>
+        <ul class="file-list" id="zipResultList"></ul>
+    </div>
+</div>
+
+<script>
+    let processedZips = [];
+
+    // Fungsi XOR Buffer
+    function applyXor(arrayBuffer, keyHex) {
+        const key = parseInt(keyHex, 16) || 0x5A;
+        const view = new Uint8Array(arrayBuffer);
+        const result = new Uint8Array(view.length);
+        for (let i = 0; i < view.length; i++) {
+            result[i] = view[i] ^ key;
+        }
+        return result;
+    }
+
+    // Event Listener Drag & Drop untuk .DAT
+    const dropDat = document.getElementById('dropDat');
+    const fileInput = document.getElementById('fileInput');
+    dropDat.addEventListener('dragover', e => { e.preventDefault(); dropDat.style.borderColor = '#22c55e'; });
+    dropDat.addEventListener('dragleave', () => { dropDat.style.borderColor = '#38bdf8'; });
+    dropDat.addEventListener('drop', e => {
+        e.preventDefault(); dropDat.style.borderColor = '#38bdf8';
+        handleDatFiles(e.dataTransfer.files);
+    });
+    fileInput.addEventListener('change', e => handleDatFiles(e.target.files));
+
+    async function handleDatFiles(fileList) {
+        const max = parseInt(document.getElementById('maxFiles').value) || 0;
+        const xorKey = document.getElementById('xorKey').value;
+        const listEl = document.getElementById('datResultList');
+        const previewBox = document.getElementById('previewBox');
+        
+        listEl.innerHTML = '';
+        previewBox.style.display = 'none';
+        processedZips = [];
+
+        let files = Array.from(fileList).filter(f => f.name.toLowerCase().endsWith('.dat'));
+        if (max > 0) files = files.slice(0, max);
+
+        for (const file of files) {
+            const buffer = await file.arrayBuffer();
+            const decrypted = applyXor(buffer, xorKey);
+            const zipName = file.name.replace(/\.dat$/i, '.zip');
+
+            // Validasi Header ZIP ("PK" -> 0x50, 0x4B)
+            const isValidZip = (decrypted[0] === 0x50 && decrypted[1] === 0x4B);
+            const blob = new Blob([decrypted], { type: 'application/zip' });
+            const url = URL.createObjectURL(blob);
+
+            processedZips.push({ name: zipName, blob, url });
+
+            const li = document.createElement('li');
+            li.className = 'file-item';
+            li.innerHTML = `
+                <div>
+                    <strong>${file.name}</strong> ➔ <code>${zipName}</code>
+                    <span class="badge">${isValidZip ? 'Valid ZIP' : 'Bukan ZIP Standar'}</span>
+                </div>
+                <div style="display:flex; gap:0.5rem;">
+                    ${isValidZip ? `<button class="secondary" onclick="inspectZip('${zipName}')">👁️ Lihat Isi</button>` : ''}
+                    <a href="${url}" download="${zipName}"><button>⬇️ Unduh ZIP</button></a>
+                </div>
+            `;
+            listEl.appendChild(li);
+        }
+
+        document.getElementById('downloadAllBtn').style.display = processedZips.length > 1 ? 'inline-block' : 'none';
+    }
+
+    // Pratinjau isi file di dalam ZIP (.plist, .sha, dll)
+    async function inspectZip(zipName) {
+        const item = processedZips.find(z => z.name === zipName);
+        if (!item) return;
+
+        const previewBox = document.getElementById('previewBox');
+        previewBox.style.display = 'block';
+        previewBox.textContent = 'Membaca isi arsip...';
+
+        const zip = await JSZip.loadAsync(item.blob);
+        let output = `=== ISI ARSIP: ${zipName} ===\n\n`;
+        
+        const filenames = Object.keys(zip.files);
+        for (const fname of filenames) {
+            const fileObj = zip.files[fname];
+            if (!fileObj.dir) {
+                output += `📄 ${fname}\n`;
+                // Tampilkan isi teks jika file berupa format konfigurasi/teks umum
+                if (/\.(plist|sha|vsha|txt|json|xml|fsh|vsh)$/i.test(fname)) {
+                    const content = await fileObj.async('string');
+                    output += `----------------------------------------\n${content.slice(0, 600)}${content.length > 600 ? '\n...(terpotong)...' : ''}\n----------------------------------------\n\n`;
+                }
+            }
+        }
+        previewBox.textContent = output;
+    }
+
+    function downloadAllZips() {
+        processedZips.forEach((item, idx) => {
+            setTimeout(() => {
+                const a = document.createElement('a');
+                a.href = item.url;
+                a.download = item.name;
+                a.click();
+            }, idx * 300);
+        });
+    }
+
+    // Event Listener Drag & Drop untuk REPACK (.ZIP -> .DAT)
+    const dropZip = document.getElementById('dropZip');
+    const zipInput = document.getElementById('zipInput');
+    dropZip.addEventListener('dragover', e => { e.preventDefault(); dropZip.style.borderColor = '#22c55e'; });
+    dropZip.addEventListener('dragleave', () => { dropZip.style.borderColor = '#38bdf8'; });
+    dropZip.addEventListener('drop', e => {
+        e.preventDefault(); dropZip.style.borderColor = '#38bdf8';
+        handleZipFiles(e.dataTransfer.files);
+    });
+    zipInput.addEventListener('change', e => handleZipFiles(e.target.files));
+
+    async function handleZipFiles(fileList) {
+        const xorKey = document.getElementById('xorKey').value;
+        const listEl = document.getElementById('zipResultList');
+        listEl.innerHTML = '';
+
+        const files = Array.from(fileList).filter(f => f.name.toLowerCase().endsWith('.zip'));
+        for (const file of files) {
+            const buffer = await file.arrayBuffer();
+            const encrypted = applyXor(buffer, xorKey);
+            const datName = file.name.replace(/\.zip$/i, '.dat');
+            const blob = new Blob([encrypted], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            
+            const li = document.createElement('li');
+            li.className = 'file-item';
+            li.innerHTML = `
+                <div>
+                    <strong>${file.name}</strong> ➔ <code>${datName}</code> 
+                    <span class="badge">Terkunci (${xorKey})</span>
+                </div> 
+                <a href="${url}" download="${datName}"><button>⬇️ Unduh .DAT</button></a>
+            `;
+            listEl.appendChild(li);
+        }
+    }
+</script>
+</body>
+</html>
